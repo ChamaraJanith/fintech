@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   ShieldCheck, 
@@ -25,11 +25,7 @@ function cn(...inputs) {
   return twMerge(clsx(inputs));
 }
 
-const timelineData = [
-  { id: 1, type: 'deposit', title: 'Funds Deposited', date: 'Feb 20, 2026', user: 'Global Corp' },
-  { id: 2, type: 'contract', title: 'Contract Signed', date: 'Feb 19, 2026', user: 'Alex S.' },
-  { id: 3, type: 'verification', title: 'ID Verified', date: 'Feb 18, 2026', user: 'System' },
-];
+import { supabase } from '../lib/supabase';
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -48,25 +44,118 @@ const itemVariants = {
 
 export default function Dashboard() {
   const [role, setRole] = useState('client'); // 'client' or 'freelancer'
-  const [status, setStatus] = useState('funded'); // 'funded', 'in_review', 'released'
+  const [contract, setContract] = useState(null);
+  const [timelineData, setTimelineData] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  const handleReleaseFunds = () => {
-    setStatus('released');
-    confetti({
-      particleCount: 150,
-      spread: 70,
-      origin: { y: 0.7 },
-      colors: ['#10b981', '#059669', '#34d399', '#ffffff']
+  // Fetch data on mount
+  useEffect(() => {
+    fetchDashboardData();
+
+    // Set up real-time subscription
+    const channel = supabase
+      .channel('schema-db-changes')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'contracts' }, () => {
+        fetchDashboardData();
+      })
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'activity_logs' }, () => {
+        fetchDashboardData();
+      })
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
+
+  const fetchDashboardData = async () => {
+    setLoading(true);
+    try {
+      // Fetch the active contract (taking the first one for this demo)
+      const { data: contractData, error: contractError } = await supabase
+        .from('contracts')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+      if (contractError) throw contractError;
+      setContract(contractData);
+
+      // Fetch activity logs
+      const { data: logsData, error: logsError } = await supabase
+        .from('activity_logs')
+        .select('*')
+        .eq('contract_id', contractData.id)
+        .order('created_at', { ascending: false });
+
+      if (logsError) throw logsError;
+      setTimelineData(logsData);
+    } catch (err) {
+      console.error('Error fetching data:', err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const addActivityLog = async (contractId, type, title) => {
+    await supabase.from('activity_logs').insert({
+      contract_id: contractId,
+      type,
+      title,
+      user_name: role === 'client' ? 'Client' : 'Freelancer'
     });
   };
 
-  const handleSubmitWork = () => {
-    setStatus('in_review');
+  const handleReleaseFunds = async () => {
+    if (!contract) return;
+    
+    const { error } = await supabase
+      .from('contracts')
+      .update({ status: 'released' })
+      .eq('id', contract.id);
+
+    if (!error) {
+      await addActivityLog(contract.id, 'release', 'Funds Released to Freelancer');
+      confetti({
+        particleCount: 150,
+        spread: 70,
+        origin: { y: 0.7 },
+        colors: ['#10b981', '#059669', '#34d399', '#ffffff']
+      });
+    }
   };
+
+  const handleSubmitWork = async () => {
+    if (!contract) return;
+
+    const { error } = await supabase
+      .from('contracts')
+      .update({ status: 'in_review' })
+      .eq('id', contract.id);
+
+    if (!error) {
+      await addActivityLog(contract.id, 'verification', 'Work Submitted for Review');
+    }
+  };
+
+  if (loading && !contract) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950">
+        <motion.div 
+          animate={{ rotate: 360 }}
+          transition={{ repeat: Infinity, duration: 1, ease: "linear" }}
+          className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full"
+        />
+      </div>
+    );
+  }
+
+  const status = contract?.status || 'funded';
 
   return (
     <div className="relative min-h-screen overflow-hidden">
-      {/* Background blobs for that 2026 feel */}
+      {/* Background blobs */}
       <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-emerald-500/5 blur-[120px] rounded-full pointer-events-none" />
       <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-slate-500/5 blur-[120px] rounded-full pointer-events-none" />
 
@@ -163,17 +252,18 @@ export default function Dashboard() {
                     <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-emerald-500">Active Smart Escrow</span>
                   </div>
                   <h2 className="text-3xl md:text-4xl font-semibold tracking-tight text-white leading-tight">
-                    Next-Gen Design System <br />
-                    <span className="text-slate-500">Scale Strategy & Orchestration</span>
+                    {contract?.title || 'Loading Contract...'}
                   </h2>
                   <div className="flex items-center gap-6 text-slate-400 text-xs font-medium">
                     <div className="flex items-center gap-2 px-3 py-1.5 bg-slate-950/40 rounded-lg border border-slate-800/50">
                       <FileText className="w-3.5 h-3.5" />
-                      <span>#SG-9921-A</span>
+                      <span>{contract?.contract_number || '---'}</span>
                     </div>
                     <div className="flex items-center gap-2">
                       <Clock className="w-3.5 h-3.5" />
-                      <span>Closes March 4, 2026</span>
+                      <span>
+                        {contract?.expires_at ? `Closes ${new Date(contract.expires_at).toLocaleDateString()}` : 'No date set'}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -183,7 +273,7 @@ export default function Dashboard() {
                     <span className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-1">Total Locked Value</span>
                     <div className="text-3xl font-bold text-white flex items-baseline gap-1">
                       <span className="text-emerald-500 text-xl font-medium">$</span>
-                      12,400.00
+                      {contract?.budget?.toLocaleString() || '0.00'}
                     </div>
                   </div>
                   {/* Escrow Status Badge */}
@@ -205,7 +295,7 @@ export default function Dashboard() {
               <div className="mt-12 flex flex-wrap items-center gap-5 pt-10 border-t border-slate-800/40 relative z-10">
                 {role === 'client' && (
                   <button
-                    disabled={status === 'released'}
+                    disabled={status !== 'in_review'}
                     onClick={handleReleaseFunds}
                     className={cn(
                       "flex-1 md:flex-none px-10 py-5 bg-emerald-500 hover:bg-emerald-400 disabled:bg-slate-800/50 disabled:text-slate-600 text-slate-950 font-bold rounded-2xl transition-all duration-500 shadow-[0_0_30px_theme('colors.emerald.500/10')] hover:shadow-[0_0_40px_theme('colors.emerald.500/20')] flex items-center justify-center gap-3 group active:scale-95",
@@ -231,10 +321,6 @@ export default function Dashboard() {
                 <button className="flex-1 md:flex-none px-10 py-5 bg-transparent hover:bg-slate-900 border border-slate-800 text-slate-400 hover:text-slate-200 font-bold rounded-2xl transition-all duration-300">
                   Open Chat
                 </button>
-                
-                <div className="flex-1 md:flex-none ml-auto text-center md:text-right">
-                  <p className="text-[10px] text-slate-600 font-medium italic">Standard SafeGuard fees apply. <br />Protected by Arbiter V2.</p>
-                </div>
               </div>
             </motion.div>
 
@@ -262,14 +348,17 @@ export default function Dashboard() {
                     <div className="p-3 bg-slate-950 border border-slate-800/50 rounded-2xl ring-4 ring-slate-900/30">
                       {item.type === 'deposit' ? <DollarSign className="w-4 h-4 text-emerald-500" /> : 
                        item.type === 'contract' ? <FileText className="w-4 h-4 text-slate-400" /> : 
+                       item.type === 'release' ? <CheckCircle2 className="w-4 h-4 text-emerald-500" /> :
                        <ShieldCheck className="w-4 h-4 text-emerald-400" />}
                     </div>
                     <div className="flex-1">
                       <p className="font-semibold text-slate-100">{item.title}</p>
-                      <p className="text-xs text-slate-500 font-medium">Authored by <span className="text-slate-400">{item.user}</span> via Ledger</p>
+                      <p className="text-xs text-slate-500 font-medium">Authored by <span className="text-slate-400">{item.user_name}</span> via Ledger</p>
                     </div>
                     <div className="text-right">
-                      <p className="text-[10px] font-mono font-bold text-slate-600 uppercase tracking-tighter">{item.date}</p>
+                      <p className="text-[10px] font-mono font-bold text-slate-600 uppercase tracking-tighter">
+                        {new Date(item.created_at).toLocaleDateString()}
+                      </p>
                       <div className="flex items-center gap-1 mt-1 justify-end">
                         <div className="w-1 h-1 bg-emerald-500 rounded-full" />
                         <span className="text-[8px] text-emerald-500/80 font-bold uppercase">Verified</span>
